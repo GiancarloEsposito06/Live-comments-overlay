@@ -253,7 +253,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     const [userConsent, setUserConsent] = useState<boolean>(false);
     const [showConsentBanner, setShowConsentBanner] = useState<boolean>(false);
     const [inputValue, setInputValue] = useState<string>('');
-    const [isConnected, setIsConnected] = useState<boolean>(false);
+    const [connectionState, setConnectionState] = useState<'connected' | 'disconnected' | 'connecting'>('disconnected');
 
     const websocketRef = useRef<WebSocket | MockWebSocket | null>(null);
     const reconnectAttemptsRef = useRef<number>(0);
@@ -350,6 +350,21 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
+    // Connection state management methods
+    const setConnected = useCallback(() => {
+      setConnectionState('connected');
+    }, []);
+
+    const setDisconnected = useCallback(() => {
+      setConnectionState('disconnected');
+    }, []);
+
+    const setConnecting = useCallback(() => {
+      setConnectionState('connecting');
+    }, []);
+
+    const isConnected = connectionState === 'connected';
+
 
     // Initialize component
     useEffect(() => {
@@ -417,14 +432,14 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const handleWebSocketOpen = () => {
       console.log('🔗 Connected to WebSocket server');
-      setIsConnected(true);
+      setConnected();
       reconnectAttemptsRef.current = 0;
       validatedConfig.onWebSocketConnect();
     };
 
     const handleWebSocketClose = (event: CloseEvent) => {
       console.log('🔌 WebSocket connection closed');
-      setIsConnected(false);
+      setDisconnected();
       validatedConfig.onWebSocketDisconnect();
       if (event.code !== 1000 && event.code !== 1001) {
         attemptReconnect();
@@ -433,17 +448,17 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const connectToWebSocket = () => {
       try {
+        setConnecting();
         // Use MockWebSocket for demo
         websocketRef.current = new MockWebSocket(validatedConfig.websocketUrl);
         
         websocketRef.current.onopen = handleWebSocketOpen;
         websocketRef.current.onmessage = handleWebSocketMessage;
         websocketRef.current.onclose = handleWebSocketClose;
-        websocketRef.current.onerror = (error) => {
-          handleError('WebSocket error', error);
-        };
+        websocketRef.current.onerror = handleWebSocketError;
       } catch (error) {
         handleError('WebSocket connection failed', error);
+        setDisconnected();
       }
     };
 
@@ -458,6 +473,11 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
+    const handleWebSocketError = (error: Event) => {
+      handleError('WebSocket error', error);
+      setDisconnected();
+    };
+
 
     const validateIncomingMessage = (data: any): boolean => {
       return data && 
@@ -469,43 +489,50 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
 
     const attemptReconnect = () => {
-      if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-        reconnectAttemptsRef.current++;
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-        
-        setTimeout(() => {
-          console.log(`🔄 Reconnection attempt ${reconnectAttemptsRef.current}`);
-          connectToWebSocket();
-        }, delay);
-      } else {
+      if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
         handleError('Max reconnection attempts reached', new Error('Unable to reconnect'));
+        return;
       }
+
+      reconnectAttemptsRef.current++;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+      
+      setTimeout(() => {
+        console.log(`🔄 Reconnection attempt ${reconnectAttemptsRef.current}`);
+        connectToWebSocket();
+      }, delay);
     };
 
     const handleIncomingComment = (data: Comment) => {
       try {
         validatedConfig.onCommentReceived(data);
 
-
-        if (validatedConfig.profanityFilter && containsProfanity(data.text)) {
-          validatedConfig.onCommentFiltered(data);
-          
-          if (validatedConfig.moderationEnabled) {
-            const quarantinedComment: Comment = { ...data, status: 'quarantined' };
-            
-            setModerationQueue(prev => [...prev, quarantinedComment]);
-            
-            if (isAdmin) {
-              displayComment(quarantinedComment);
-            }
-          }
+        if (shouldFilterComment(data)) {
+          handleFilteredComment(data);
           return;
         }
-
 
         displayComment(data);
       } catch (error) {
         handleError('Incoming comment handling failed', error);
+      }
+    };
+
+    const shouldFilterComment = (data: Comment): boolean => {
+      return validatedConfig.profanityFilter && containsProfanity(data.text);
+    };
+
+    const handleFilteredComment = (data: Comment) => {
+      validatedConfig.onCommentFiltered(data);
+      
+      if (validatedConfig.moderationEnabled) {
+        const quarantinedComment: Comment = { ...data, status: 'quarantined' };
+        
+        setModerationQueue(prev => [...prev, quarantinedComment]);
+        
+        if (isAdmin) {
+          displayComment(quarantinedComment);
+        }
       }
     };
 
@@ -527,42 +554,46 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
+    const validateMessage = (message: string): void => {
+      if (!userConsent && validatedConfig.gdprCompliance) {
+        throw new Error('User consent required');
+      }
+
+      if (!message || typeof message !== 'string' || !message.trim()) {
+        throw new Error('Invalid message');
+      }
+
+      if (message.length > 200) {
+        throw new Error('Message too long');
+      }
+
+      if (!checkRateLimit()) {
+        throw new Error('Rate limit exceeded');
+      }
+    };
+
+    const createComment = (message: string): Comment => {
+      return {
+        id: generateId(),
+        username: 'User' + Math.floor(Math.random() * 1000),
+        text: message.trim(),
+        timestamp: new Date().toISOString()
+      };
+    };
+
+    const sendWebSocketMessage = (comment: Comment): void => {
+      if (websocketRef.current && websocketRef.current.readyState === MockWebSocket.OPEN) {
+        websocketRef.current.send(JSON.stringify(comment));
+      } else {
+        throw new Error('Not connected to server');
+      }
+    };
 
     const sendComment = useCallback((message: string) => {
       try {
-        if (!userConsent && validatedConfig.gdprCompliance) {
-          throw new Error('User consent required');
-        }
-
-
-        if (!message || typeof message !== 'string' || !message.trim()) {
-          throw new Error('Invalid message');
-        }
-
-
-        if (message.length > 200) {
-          throw new Error('Message too long');
-        }
-
-
-        if (!checkRateLimit()) {
-          throw new Error('Rate limit exceeded');
-        }
-
-
-        const comment: Comment = {
-          id: generateId(),
-          username: 'User' + Math.floor(Math.random() * 1000),
-          text: message.trim(),
-          timestamp: new Date().toISOString()
-        };
-
-
-        if (websocketRef.current && websocketRef.current.readyState === MockWebSocket.OPEN) {
-          websocketRef.current.send(JSON.stringify(comment));
-        } else {
-          throw new Error('Not connected to server');
-        }
+        validateMessage(message);
+        const comment = createComment(message);
+        sendWebSocketMessage(comment);
       } catch (error) {
         handleError('Send comment failed', error);
         const errorMessage = error instanceof Error ? error.message : String(error);
