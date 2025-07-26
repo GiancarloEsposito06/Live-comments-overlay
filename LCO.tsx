@@ -21,12 +21,6 @@ import React, { useState, useEffect, useRef, useCallback, useImperativeHandle, f
 // TYPE DEFINITIONS
 // =====================================================
 
-type CommentStatus = 'normal' | 'quarantined';
-type UserRole = 'user' | 'admin';
-type Theme = 'default' | 'dark' | 'light';
-type Backend = 'websocket' | 'firebase';
-type ModerationAction = 'highlight' | 'quarantine' | 'delete';
-type ConnectionState = 'connected' | 'connecting' | 'disconnected';
 
 interface Comment {
   id: string;
@@ -34,22 +28,22 @@ interface Comment {
   text: string;
   timestamp: string;
   highlighted?: boolean;
-  status?: CommentStatus;
+  status?: 'normal' | 'quarantined';
   type?: string;
 }
 
 
 interface LiveCommentsConfig {
-  backend?: Backend;
+  backend?: 'websocket' | 'firebase';
   websocketUrl?: string;
   firebaseConfig?: any;
   moderationEnabled?: boolean;
   maxCommentsVisible?: number;
   commentDisplayDuration?: number;
   profanityFilter?: boolean;
-  userRole?: UserRole;
+  userRole?: 'user' | 'admin';
   gdprCompliance?: boolean;
-  theme?: Theme;
+  theme?: 'default' | 'dark' | 'light';
   onCommentReceived?: (comment: Comment) => void;
   onCommentFiltered?: (comment: Comment) => void;
   onModerationAction?: (commentId: string, action: string) => void;
@@ -68,7 +62,7 @@ interface LiveCommentsOverlayProps {
 
 interface LiveCommentsOverlayRef {
   sendComment: (message: string) => void;
-  moderateComment: (commentId: string, action: ModerationAction) => void;
+  moderateComment: (commentId: string, action: 'highlight' | 'quarantine' | 'delete') => void;
   getComments: () => Comment[];
   getModerationQueue: () => Comment[];
   simulateComment: (comment: Comment) => void;
@@ -82,37 +76,6 @@ interface DemoStats {
   isConnected: boolean;
   moderationQueue: number;
 }
-
-
-// =====================================================
-// UTILITY FUNCTIONS
-// =====================================================
-
-const safeStringifyError = (error: unknown): string => {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === 'object' && error !== null) {
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return String(error);
-    }
-  }
-  return String(error);
-};
-
-const getBorderColor = (comment: Comment): string => {
-  if (comment.highlighted) return '#ffd700';
-  if (comment.status === 'quarantined') return '#dc3545';
-  return '#007bff';
-};
-
-const getBackgroundColor = (comment: Comment): string => {
-  if (comment.highlighted) return 'rgba(255, 215, 0, 0.2)';
-  if (comment.status === 'quarantined') return 'rgba(220, 53, 69, 0.2)';
-  return 'rgba(255, 255, 255, 0.1)';
-};
 
 
 // =====================================================
@@ -244,8 +207,7 @@ class MockWebSocket {
         }
       }, 100);
     } catch (error) {
-      const errorMessage = safeStringifyError(error);
-      console.error('❌ Error sending message:', errorMessage);
+      console.error('❌ Error sending message:', error);
     }
   }
 
@@ -266,6 +228,7 @@ class MockWebSocket {
 // LIVE COMMENTS OVERLAY COMPONENT
 // =====================================================
 
+
 const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverlayProps>(
   ({ config, className = '' }, ref) => {
     const [comments, setComments] = useState<Comment[]>([]);
@@ -273,7 +236,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     const [userConsent, setUserConsent] = useState<boolean>(false);
     const [showConsentBanner, setShowConsentBanner] = useState<boolean>(false);
     const [inputValue, setInputValue] = useState<string>('');
-    const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
+    const [isConnected, setIsConnected] = useState<boolean>(false);
 
     const websocketRef = useRef<WebSocket | MockWebSocket | null>(null);
     const reconnectAttemptsRef = useRef<number>(0);
@@ -286,11 +249,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     // Default configuration with validation
     const validateConfig = (inputConfig: LiveCommentsConfig): Required<LiveCommentsConfig> => {
-      const defaultUserRole: UserRole = 'user';
-      const defaultTheme: Theme = 'default';
-      const userRole = inputConfig.userRole || defaultUserRole;
-      const theme = inputConfig.theme || defaultTheme;
-      
       return {
         backend: inputConfig.backend || 'websocket',
         websocketUrl: inputConfig.websocketUrl || 'ws://localhost:8080',
@@ -299,9 +257,9 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         maxCommentsVisible: Math.min(Math.max(inputConfig.maxCommentsVisible || 50, 1), 200),
         commentDisplayDuration: Math.min(Math.max(inputConfig.commentDisplayDuration || 5000, 1000), 30000),
         profanityFilter: inputConfig.profanityFilter !== false,
-        userRole: ['user', 'admin'].includes(userRole) ? userRole : defaultUserRole,
+        userRole: ['user', 'admin'].includes(inputConfig.userRole || 'user') ? (inputConfig.userRole || 'user') : 'user',
         gdprCompliance: inputConfig.gdprCompliance !== false,
-        theme: ['default', 'dark', 'light'].includes(theme) ? theme : defaultTheme,
+        theme: ['default', 'dark', 'light'].includes(inputConfig.theme || 'default') ? (inputConfig.theme || 'default') : 'default',
         onCommentReceived: inputConfig.onCommentReceived || (() => {}),
         onCommentFiltered: inputConfig.onCommentFiltered || (() => {}),
         onModerationAction: inputConfig.onModerationAction || (() => {}),
@@ -314,27 +272,12 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const validatedConfig = validateConfig(config);
     const isAdmin = validatedConfig.userRole === 'admin';
-    const isConnected = connectionState === 'connected';
-
-
-    // Connection state management methods
-    const setConnected = useCallback(() => {
-      setConnectionState('connected');
-    }, []);
-
-    const setDisconnected = useCallback(() => {
-      setConnectionState('disconnected');
-    }, []);
-
-    const setConnecting = useCallback(() => {
-      setConnectionState('connecting');
-    }, []);
 
 
     // Error handling
     const handleError = useCallback((message: string, error: unknown) => {
-      const errorMessage = safeStringifyError(error);
-      console.error(`❌ LiveCommentsOverlay Error: ${message}`, errorMessage);
+      console.error(`❌ LiveCommentsOverlay Error: ${message}`, error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       validatedConfig.onError({ message, error: errorMessage, timestamp: new Date().toISOString() });
     }, [validatedConfig]);
 
@@ -450,19 +393,37 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-    const handleWebSocketOpen = () => {
-      console.log('🔗 Connected to WebSocket server');
-      setConnected();
-      reconnectAttemptsRef.current = 0;
-      validatedConfig.onWebSocketConnect();
-    };
 
-    const handleWebSocketClose = (event: CloseEvent) => {
-      console.log('🔌 WebSocket connection closed');
-      setDisconnected();
-      validatedConfig.onWebSocketDisconnect();
-      if (event.code !== 1000 && event.code !== 1001) {
-        attemptReconnect();
+    const connectToWebSocket = () => {
+      try {
+        // Use MockWebSocket for demo
+        websocketRef.current = new MockWebSocket(validatedConfig.websocketUrl);
+        
+        websocketRef.current.onopen = () => {
+          console.log('🔗 Connected to WebSocket server');
+          setIsConnected(true);
+          reconnectAttemptsRef.current = 0;
+          validatedConfig.onWebSocketConnect();
+        };
+        
+        websocketRef.current.onmessage = (event) => {
+          handleWebSocketMessage(event);
+        };
+        
+        websocketRef.current.onclose = (event) => {
+          console.log('🔌 WebSocket connection closed');
+          setIsConnected(false);
+          validatedConfig.onWebSocketDisconnect();
+          if (event.code !== 1000 && event.code !== 1001) {
+            attemptReconnect();
+          }
+        };
+        
+        websocketRef.current.onerror = (error) => {
+          handleError('WebSocket error', error);
+        };
+      } catch (error) {
+        handleError('WebSocket connection failed', error);
       }
     };
 
@@ -477,27 +438,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-    const handleWebSocketError = (error: Event) => {
-      handleError('WebSocket error', error);
-      setDisconnected();
-    };
-
-    const connectToWebSocket = () => {
-      try {
-        setConnecting();
-        // Use MockWebSocket for demo
-        websocketRef.current = new MockWebSocket(validatedConfig.websocketUrl);
-        
-        websocketRef.current.onopen = handleWebSocketOpen;
-        websocketRef.current.onmessage = handleWebSocketMessage;
-        websocketRef.current.onclose = handleWebSocketClose;
-        websocketRef.current.onerror = handleWebSocketError;
-      } catch (error) {
-        handleError('WebSocket connection failed', error);
-        setDisconnected();
-      }
-    };
-
 
     const validateIncomingMessage = (data: any): boolean => {
       return data && 
@@ -509,35 +449,16 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
 
     const attemptReconnect = () => {
-      if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+      if (reconnectAttemptsRef.current < maxReconnectAttempts) {
+        reconnectAttemptsRef.current++;
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+        
+        setTimeout(() => {
+          console.log(`🔄 Reconnection attempt ${reconnectAttemptsRef.current}`);
+          connectToWebSocket();
+        }, delay);
+      } else {
         handleError('Max reconnection attempts reached', new Error('Unable to reconnect'));
-        return;
-      }
-
-      reconnectAttemptsRef.current++;
-      const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-      
-      setTimeout(() => {
-        console.log(`🔄 Reconnection attempt ${reconnectAttemptsRef.current}`);
-        connectToWebSocket();
-      }, delay);
-    };
-
-    const shouldFilterComment = (data: Comment): boolean => {
-      return validatedConfig.profanityFilter && containsProfanity(data.text);
-    };
-
-    const handleFilteredComment = (data: Comment) => {
-      validatedConfig.onCommentFiltered(data);
-      
-      if (validatedConfig.moderationEnabled) {
-        const quarantinedComment: Comment = { ...data, status: 'quarantined' };
-        
-        setModerationQueue(prev => [...prev, quarantinedComment]);
-        
-        if (isAdmin) {
-          displayComment(quarantinedComment);
-        }
       }
     };
 
@@ -545,10 +466,22 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       try {
         validatedConfig.onCommentReceived(data);
 
-        if (shouldFilterComment(data)) {
-          handleFilteredComment(data);
+
+        if (validatedConfig.profanityFilter && containsProfanity(data.text)) {
+          validatedConfig.onCommentFiltered(data);
+          
+          if (validatedConfig.moderationEnabled) {
+            const quarantinedComment: Comment = { ...data, status: 'quarantined' };
+            
+            setModerationQueue(prev => [...prev, quarantinedComment]);
+            
+            if (isAdmin) {
+              displayComment(quarantinedComment);
+            }
+          }
           return;
         }
+
 
         displayComment(data);
       } catch (error) {
@@ -574,54 +507,50 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-    const validateMessage = (message: string): void => {
-      if (!userConsent && validatedConfig.gdprCompliance) {
-        throw new Error('User consent required');
-      }
-
-      if (!message || typeof message !== 'string' || !message.trim()) {
-        throw new Error('Invalid message');
-      }
-
-      if (message.length > 200) {
-        throw new Error('Message too long');
-      }
-
-      if (!checkRateLimit()) {
-        throw new Error('Rate limit exceeded');
-      }
-    };
-
-    const createComment = (message: string): Comment => {
-      return {
-        id: generateId(),
-        username: 'User' + Math.floor(Math.random() * 1000),
-        text: message.trim(),
-        timestamp: new Date().toISOString()
-      };
-    };
-
-    const sendWebSocketMessage = (comment: Comment): void => {
-      if (websocketRef.current && websocketRef.current.readyState === MockWebSocket.OPEN) {
-        websocketRef.current.send(JSON.stringify(comment));
-      } else {
-        throw new Error('Not connected to server');
-      }
-    };
 
     const sendComment = useCallback((message: string) => {
       try {
-        validateMessage(message);
-        const comment = createComment(message);
-        sendWebSocketMessage(comment);
+        if (!userConsent && validatedConfig.gdprCompliance) {
+          throw new Error('User consent required');
+        }
+
+
+        if (!message || typeof message !== 'string' || !message.trim()) {
+          throw new Error('Invalid message');
+        }
+
+
+        if (message.length > 200) {
+          throw new Error('Message too long');
+        }
+
+
+        if (!checkRateLimit()) {
+          throw new Error('Rate limit exceeded');
+        }
+
+
+        const comment: Comment = {
+          id: generateId(),
+          username: 'User' + Math.floor(Math.random() * 1000),
+          text: message.trim(),
+          timestamp: new Date().toISOString()
+        };
+
+
+        if (websocketRef.current && websocketRef.current.readyState === MockWebSocket.OPEN) {
+          websocketRef.current.send(JSON.stringify(comment));
+        } else {
+          throw new Error('Not connected to server');
+        }
       } catch (error) {
         handleError('Send comment failed', error);
-        const errorMessage = safeStringifyError(error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
         alert(`Send failed: ${errorMessage}`);
       }
     }, [userConsent, validatedConfig.gdprCompliance, handleError]);
 
-    const processCommentModeration = (comment: Comment, action: ModerationAction): Comment | null => {
+    const processCommentModeration = (comment: Comment, action: 'highlight' | 'quarantine' | 'delete'): Comment | null => {
       switch (action) {
         case 'highlight':
           return { ...comment, highlighted: true };
@@ -634,7 +563,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-    const moderateComment = useCallback((commentId: string, action: ModerationAction) => {
+    const moderateComment = useCallback((commentId: string, action: 'highlight' | 'quarantine' | 'delete') => {
       try {
         if (!commentId || !['highlight', 'quarantine', 'delete'].includes(action)) {
           throw new Error('Invalid moderation parameters');
@@ -649,7 +578,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
               return processCommentModeration(comment, action);
             }
             return comment;
-          }).filter(Boolean);
+          }).filter(Boolean) as Comment[];
         });
       } catch (error) {
         handleError('Moderation failed', error);
@@ -763,14 +692,11 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     // Sub-components
     const CommentItem: React.FC<{ comment: Comment }> = ({ comment }) => {
-      const borderColor = getBorderColor(comment);
-      const backgroundColor = getBackgroundColor(comment);
-      
       const itemStyles: React.CSSProperties = {
         marginBottom: '8px',
         padding: '5px',
-        borderLeft: `3px solid ${borderColor}`,
-        background: backgroundColor,
+        borderLeft: `3px solid ${comment.highlighted ? '#ffd700' : comment.status === 'quarantined' ? '#dc3545' : '#007bff'}`,
+        background: comment.highlighted ? 'rgba(255, 215, 0, 0.2)' : comment.status === 'quarantined' ? 'rgba(220, 53, 69, 0.2)' : 'rgba(255, 255, 255, 0.1)',
         borderRadius: '4px'
       };
 
@@ -848,42 +774,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       </div>
     );
 
-    // Render based on connection state
-    const renderConnectionStatus = () => {
-      switch (connectionState) {
-        case 'connected':
-          return null; // Normal operation
-        case 'connecting':
-          return (
-            <div style={{ 
-              position: 'absolute', 
-              top: '50%', 
-              left: '50%', 
-              transform: 'translate(-50%, -50%)',
-              color: '#ffffff',
-              fontSize: '12px'
-            }}>
-              Connecting...
-            </div>
-          );
-        case 'disconnected':
-          return (
-            <div style={{ 
-              position: 'absolute', 
-              top: '50%', 
-              left: '50%', 
-              transform: 'translate(-50%, -50%)',
-              color: '#dc3545',
-              fontSize: '12px'
-            }}>
-              Disconnected
-            </div>
-          );
-        default:
-          return null;
-      }
-    };
-
 
     return (
       <>
@@ -894,7 +784,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
           aria-live="polite"
           aria-label="Live comments stream"
         >
-          {renderConnectionStatus()}
           {comments.map(comment => (
             <CommentItem key={comment.id} comment={comment} />
           ))}
@@ -912,7 +801,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyPress={handleInputSubmit}
-            disabled={connectionState !== 'connected'}
           />
         </div>
 
@@ -934,7 +822,7 @@ LiveCommentsOverlay.displayName = 'LiveCommentsOverlay';
 
 const DemoPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
-  const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
+  const [isConnected, setIsConnected] = useState(false);
   const [commentCount, setCommentCount] = useState(0);
   const [errorCount, setErrorCount] = useState(0);
   const [consoleLog, setConsoleLog] = useState<string[]>(['Demo starting...']);
@@ -942,7 +830,6 @@ const DemoPage: React.FC = () => {
   
   const overlayRef = useRef<LiveCommentsOverlayRef>(null);
 
-  const isConnected = connectionState === 'connected';
 
   // Demo configuration
   const demoConfig: LiveCommentsConfig = {
@@ -960,11 +847,11 @@ const DemoPage: React.FC = () => {
       setCommentCount(prev => prev + 1);
     },
     onWebSocketConnect: () => {
-      setConnectionState('connected');
+      setIsConnected(true);
       logToConsole('🔗 Connected to demo server');
     },
     onWebSocketDisconnect: () => {
-      setConnectionState('disconnected');
+      setIsConnected(false);
       logToConsole('🔌 Disconnected from server');
     },
     onError: (errorInfo: { message: string; error: string; timestamp: string }) => {
@@ -1056,8 +943,7 @@ const DemoPage: React.FC = () => {
 
   const toggleAdminMode = () => {
     setIsAdminMode(prev => !prev);
-    const newMode = !isAdminMode;
-    const message = newMode ? 
+    const message = !isAdminMode ? 
       'Admin mode enabled! Refresh to see admin controls.' :
       'Admin mode disabled.';
     logToConsole(message);
@@ -1083,9 +969,6 @@ const DemoPage: React.FC = () => {
     alert(statsMessage);
   };
 
-  const getStatusColor = (connected: boolean): string => {
-    return connected ? '#28a745' : '#dc3545';
-  };
 
   // Styles
   const styles = {
@@ -1192,7 +1075,7 @@ const DemoPage: React.FC = () => {
       width: '8px',
       height: '8px',
       borderRadius: '50%',
-      background: getStatusColor(isConnected),
+      background: isConnected ? '#28a745' : '#dc3545',
       animation: 'pulse 2s infinite'
     },
     loading: {
@@ -1222,8 +1105,6 @@ const DemoPage: React.FC = () => {
     );
   }
 
-  const connectionStatus = isConnected ? 'Connected' : 'Disconnected';
-  const adminModeText = isAdminMode ? '(ON)' : '(OFF)';
 
   return (
     <div style={styles.container}>
@@ -1271,7 +1152,7 @@ const DemoPage: React.FC = () => {
               Test Spam Filter
             </button>
             <button style={styles.btn} onClick={toggleAdminMode}>
-              Toggle Admin Mode {adminModeText}
+              Toggle Admin Mode {isAdminMode ? '(ON)' : '(OFF)'}
             </button>
             <button style={{...styles.btn, ...styles.btnSecondary}} onClick={clearComments}>
               Clear Comments
@@ -1338,7 +1219,7 @@ const DemoPage: React.FC = () => {
       <div style={styles.statusBar}>
         <div style={styles.statusIndicator}>
           <div style={styles.statusDot} />
-          <span>{connectionStatus}</span>
+          <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
         </div>
         <div>
           <span>Comments: {commentCount}</span> |{' '}
