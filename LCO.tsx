@@ -26,6 +26,7 @@ type UserRole = 'user' | 'admin';
 type Theme = 'default' | 'dark' | 'light';
 type Backend = 'websocket' | 'firebase';
 type ModerationAction = 'highlight' | 'quarantine' | 'delete';
+type ConnectionState = 'connected' | 'connecting' | 'disconnected';
 
 interface Comment {
   id: string;
@@ -81,6 +82,37 @@ interface DemoStats {
   isConnected: boolean;
   moderationQueue: number;
 }
+
+
+// =====================================================
+// UTILITY FUNCTIONS
+// =====================================================
+
+const safeStringifyError = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'object' && error !== null) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
+};
+
+const getBorderColor = (comment: Comment): string => {
+  if (comment.highlighted) return '#ffd700';
+  if (comment.status === 'quarantined') return '#dc3545';
+  return '#007bff';
+};
+
+const getBackgroundColor = (comment: Comment): string => {
+  if (comment.highlighted) return 'rgba(255, 215, 0, 0.2)';
+  if (comment.status === 'quarantined') return 'rgba(220, 53, 69, 0.2)';
+  return 'rgba(255, 255, 255, 0.1)';
+};
 
 
 // =====================================================
@@ -212,7 +244,7 @@ class MockWebSocket {
         }
       }, 100);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = safeStringifyError(error);
       console.error('❌ Error sending message:', errorMessage);
     }
   }
@@ -234,18 +266,6 @@ class MockWebSocket {
 // LIVE COMMENTS OVERLAY COMPONENT
 // =====================================================
 
-const getBorderColor = (comment: Comment): string => {
-  if (comment.highlighted) return '#ffd700';
-  if (comment.status === 'quarantined') return '#dc3545';
-  return '#007bff';
-};
-
-const getBackgroundColor = (comment: Comment): string => {
-  if (comment.highlighted) return 'rgba(255, 215, 0, 0.2)';
-  if (comment.status === 'quarantined') return 'rgba(220, 53, 69, 0.2)';
-  return 'rgba(255, 255, 255, 0.1)';
-};
-
 const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverlayProps>(
   ({ config, className = '' }, ref) => {
     const [comments, setComments] = useState<Comment[]>([]);
@@ -253,7 +273,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     const [userConsent, setUserConsent] = useState<boolean>(false);
     const [showConsentBanner, setShowConsentBanner] = useState<boolean>(false);
     const [inputValue, setInputValue] = useState<string>('');
-    const [connectionState, setConnectionState] = useState<'connected' | 'disconnected' | 'connecting'>('disconnected');
+    const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
 
     const websocketRef = useRef<WebSocket | MockWebSocket | null>(null);
     const reconnectAttemptsRef = useRef<number>(0);
@@ -294,11 +314,26 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const validatedConfig = validateConfig(config);
     const isAdmin = validatedConfig.userRole === 'admin';
+    const isConnected = connectionState === 'connected';
+
+
+    // Connection state management methods
+    const setConnected = useCallback(() => {
+      setConnectionState('connected');
+    }, []);
+
+    const setDisconnected = useCallback(() => {
+      setConnectionState('disconnected');
+    }, []);
+
+    const setConnecting = useCallback(() => {
+      setConnectionState('connecting');
+    }, []);
 
 
     // Error handling
     const handleError = useCallback((message: string, error: unknown) => {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = safeStringifyError(error);
       console.error(`❌ LiveCommentsOverlay Error: ${message}`, errorMessage);
       validatedConfig.onError({ message, error: errorMessage, timestamp: new Date().toISOString() });
     }, [validatedConfig]);
@@ -349,21 +384,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         return false;
       }
     };
-
-    // Connection state management methods
-    const setConnected = useCallback(() => {
-      setConnectionState('connected');
-    }, []);
-
-    const setDisconnected = useCallback(() => {
-      setConnectionState('disconnected');
-    }, []);
-
-    const setConnecting = useCallback(() => {
-      setConnectionState('connecting');
-    }, []);
-
-    const isConnected = connectionState === 'connected';
 
 
     // Initialize component
@@ -446,22 +466,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-    const connectToWebSocket = () => {
-      try {
-        setConnecting();
-        // Use MockWebSocket for demo
-        websocketRef.current = new MockWebSocket(validatedConfig.websocketUrl);
-        
-        websocketRef.current.onopen = handleWebSocketOpen;
-        websocketRef.current.onmessage = handleWebSocketMessage;
-        websocketRef.current.onclose = handleWebSocketClose;
-        websocketRef.current.onerror = handleWebSocketError;
-      } catch (error) {
-        handleError('WebSocket connection failed', error);
-        setDisconnected();
-      }
-    };
-
     const handleWebSocketMessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data) as Comment;
@@ -476,6 +480,22 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     const handleWebSocketError = (error: Event) => {
       handleError('WebSocket error', error);
       setDisconnected();
+    };
+
+    const connectToWebSocket = () => {
+      try {
+        setConnecting();
+        // Use MockWebSocket for demo
+        websocketRef.current = new MockWebSocket(validatedConfig.websocketUrl);
+        
+        websocketRef.current.onopen = handleWebSocketOpen;
+        websocketRef.current.onmessage = handleWebSocketMessage;
+        websocketRef.current.onclose = handleWebSocketClose;
+        websocketRef.current.onerror = handleWebSocketError;
+      } catch (error) {
+        handleError('WebSocket connection failed', error);
+        setDisconnected();
+      }
     };
 
 
@@ -503,21 +523,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }, delay);
     };
 
-    const handleIncomingComment = (data: Comment) => {
-      try {
-        validatedConfig.onCommentReceived(data);
-
-        if (shouldFilterComment(data)) {
-          handleFilteredComment(data);
-          return;
-        }
-
-        displayComment(data);
-      } catch (error) {
-        handleError('Incoming comment handling failed', error);
-      }
-    };
-
     const shouldFilterComment = (data: Comment): boolean => {
       return validatedConfig.profanityFilter && containsProfanity(data.text);
     };
@@ -533,6 +538,21 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         if (isAdmin) {
           displayComment(quarantinedComment);
         }
+      }
+    };
+
+    const handleIncomingComment = (data: Comment) => {
+      try {
+        validatedConfig.onCommentReceived(data);
+
+        if (shouldFilterComment(data)) {
+          handleFilteredComment(data);
+          return;
+        }
+
+        displayComment(data);
+      } catch (error) {
+        handleError('Incoming comment handling failed', error);
       }
     };
 
@@ -596,7 +616,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         sendWebSocketMessage(comment);
       } catch (error) {
         handleError('Send comment failed', error);
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage = safeStringifyError(error);
         alert(`Send failed: ${errorMessage}`);
       }
     }, [userConsent, validatedConfig.gdprCompliance, handleError]);
@@ -828,6 +848,42 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       </div>
     );
 
+    // Render based on connection state
+    const renderConnectionStatus = () => {
+      switch (connectionState) {
+        case 'connected':
+          return null; // Normal operation
+        case 'connecting':
+          return (
+            <div style={{ 
+              position: 'absolute', 
+              top: '50%', 
+              left: '50%', 
+              transform: 'translate(-50%, -50%)',
+              color: '#ffffff',
+              fontSize: '12px'
+            }}>
+              Connecting...
+            </div>
+          );
+        case 'disconnected':
+          return (
+            <div style={{ 
+              position: 'absolute', 
+              top: '50%', 
+              left: '50%', 
+              transform: 'translate(-50%, -50%)',
+              color: '#dc3545',
+              fontSize: '12px'
+            }}>
+              Disconnected
+            </div>
+          );
+        default:
+          return null;
+      }
+    };
+
 
     return (
       <>
@@ -838,6 +894,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
           aria-live="polite"
           aria-label="Live comments stream"
         >
+          {renderConnectionStatus()}
           {comments.map(comment => (
             <CommentItem key={comment.id} comment={comment} />
           ))}
@@ -855,6 +912,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyPress={handleInputSubmit}
+            disabled={connectionState !== 'connected'}
           />
         </div>
 
@@ -876,7 +934,7 @@ LiveCommentsOverlay.displayName = 'LiveCommentsOverlay';
 
 const DemoPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
-  const [isConnected, setIsConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [commentCount, setCommentCount] = useState(0);
   const [errorCount, setErrorCount] = useState(0);
   const [consoleLog, setConsoleLog] = useState<string[]>(['Demo starting...']);
@@ -884,6 +942,7 @@ const DemoPage: React.FC = () => {
   
   const overlayRef = useRef<LiveCommentsOverlayRef>(null);
 
+  const isConnected = connectionState === 'connected';
 
   // Demo configuration
   const demoConfig: LiveCommentsConfig = {
@@ -901,11 +960,11 @@ const DemoPage: React.FC = () => {
       setCommentCount(prev => prev + 1);
     },
     onWebSocketConnect: () => {
-      setIsConnected(true);
+      setConnectionState('connected');
       logToConsole('🔗 Connected to demo server');
     },
     onWebSocketDisconnect: () => {
-      setIsConnected(false);
+      setConnectionState('disconnected');
       logToConsole('🔌 Disconnected from server');
     },
     onError: (errorInfo: { message: string; error: string; timestamp: string }) => {
