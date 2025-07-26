@@ -1,3 +1,4 @@
+'use client'
 import React, { useState, useEffect, useRef, useCallback, useImperativeHandle, forwardRef } from 'react';
 
 /**
@@ -68,7 +69,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     const [userConsent, setUserConsent] = useState(false);
     const [showConsentBanner, setShowConsentBanner] = useState(false);
     const [inputValue, setInputValue] = useState('');
-    const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+    const [isMobile, setIsMobile] = useState(false); // Default to false for SSR
 
     const websocketRef = useRef<WebSocket | null>(null);
     const reconnectAttemptsRef = useRef<number>(0);
@@ -77,7 +78,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const bannedWords = ['spam', 'offensive', 'inappropriate'];
     const maxReconnectAttempts = 5;
-    const isAdmin = config.userRole === 'admin';
 
     // Default configuration
     const defaultConfig: Required<LiveCommentsConfig> = {
@@ -99,10 +99,21 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       ...config
     };
 
+    const isAdmin = defaultConfig.userRole === 'admin';
+
     // Initialize component
     useEffect(() => {
+      // Set initial mobile state after component mounts (client-side only)
+      const checkIsMobile = () => {
+        if (typeof window !== 'undefined') {
+          setIsMobile(window.innerWidth <= 768);
+        }
+      };
+      
+      checkIsMobile(); // Set initial value
+      
       if (defaultConfig.gdprCompliance) {
-        const consent = localStorage.getItem('commentsConsent');
+        const consent = typeof window !== 'undefined' ? localStorage.getItem('commentsConsent') : null;
         if (consent === 'granted') {
           setUserConsent(true);
         } else {
@@ -114,11 +125,15 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
       // Handle window resize
       const handleResize = () => {
-        setIsMobile(window.innerWidth <= 768);
+        if (typeof window !== 'undefined') {
+          setIsMobile(window.innerWidth <= 768);
+        }
       };
 
-      window.addEventListener('resize', handleResize);
-      return () => window.removeEventListener('resize', handleResize);
+      if (typeof window !== 'undefined') {
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+      }
     }, [defaultConfig.gdprCompliance]);
 
     // Connect to backend when consent is granted
@@ -137,15 +152,19 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
         if (e.altKey && e.key === 'c') {
-          const input = document.querySelector('.comments-input');
-          if (input && 'focus' in input) {
-            (input as HTMLInputElement).focus();
+          if (typeof document !== 'undefined') {
+            const input = document.querySelector('.comments-input');
+            if (input && 'focus' in input) {
+              (input as HTMLInputElement).focus();
+            }
           }
         }
       };
 
-      document.addEventListener('keydown', handleKeyDown);
-      return () => document.removeEventListener('keydown', handleKeyDown);
+      if (typeof document !== 'undefined') {
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+      }
     }, []);
 
     /**
@@ -177,9 +196,13 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     };
 
     const sanitizeHtml = (text: string): string => {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+      if (typeof document !== 'undefined') {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+      // Fallback for SSR - just return the text as-is
+      return text;
     };
 
     const containsProfanity = (text: string): boolean => {
@@ -359,7 +382,9 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const handleConsentAccept = () => {
       setUserConsent(true);
-      localStorage.setItem('commentsConsent', 'granted');
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('commentsConsent', 'granted');
+      }
       setShowConsentBanner(false);
     };
 
@@ -380,7 +405,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         websocketRef.current.close();
       }
       
-      if (defaultConfig.gdprCompliance) {
+      if (defaultConfig.gdprCompliance && typeof window !== 'undefined') {
         localStorage.removeItem('commentsConsent');
       }
     }, [defaultConfig.gdprCompliance]);
@@ -608,6 +633,365 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
 LiveCommentsOverlay.displayName = 'LiveCommentsOverlay';
 
+// Demo Page Component that showcases the LiveCommentsOverlay
+const LiveCommentsDemo: React.FC = () => {
+  const commentsRef = useRef<LiveCommentsOverlayRef>(null);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [userRole, setUserRole] = useState<'user' | 'admin'>('user');
+  const [websocketUrl, setWebsocketUrl] = useState('ws://localhost:8080');
+  const [moderationEnabled, setModerationEnabled] = useState(true);
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isVideoPlaying) {
+      interval = setInterval(() => {
+        setCurrentTime(prev => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isVideoPlaying]);
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const handleSendTestComment = () => {
+    if (commentsRef.current) {
+      const testMessages = [
+        "Great video! 👍",
+        "This is really helpful",
+        "Can you explain that part again?",
+        "Love this content!",
+        "Thanks for sharing 🙏"
+      ];
+      const randomMessage = testMessages[Math.floor(Math.random() * testMessages.length)];
+      commentsRef.current.sendComment(randomMessage);
+    }
+  };
+
+  const config: LiveCommentsConfig = {
+    backend: 'websocket',
+    websocketUrl: websocketUrl,
+    moderationEnabled: moderationEnabled,
+    maxCommentsVisible: 50,
+    commentDisplayDuration: 8000,
+    profanityFilter: true,
+    userRole: userRole,
+    gdprCompliance: true,
+    theme: 'default',
+    onCommentReceived: (comment) => console.log('📨 Comment received:', comment),
+    onCommentFiltered: (comment) => console.log('🚫 Comment filtered:', comment),
+    onModerationAction: (id, action) => console.log('🛡️ Moderation action:', id, action),
+    onWebSocketConnect: () => console.log('🔌 WebSocket connected'),
+    onWebSocketDisconnect: () => console.log('🔌 WebSocket disconnected')
+  };
+
+  const demoStyles: { [key: string]: React.CSSProperties } = {
+    container: {
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      padding: '20px',
+      fontFamily: 'Arial, sans-serif'
+    },
+    header: {
+      textAlign: 'center',
+      color: 'white',
+      marginBottom: '30px'
+    },
+    title: {
+      fontSize: '2.5rem',
+      fontWeight: 'bold',
+      marginBottom: '10px',
+      textShadow: '2px 2px 4px rgba(0,0,0,0.3)'
+    },
+    subtitle: {
+      fontSize: '1.2rem',
+      opacity: 0.9
+    },
+    mainContent: {
+      maxWidth: '1200px',
+      margin: '0 auto',
+      display: 'grid',
+      gridTemplateColumns: '2fr 1fr',
+      gap: '30px',
+      alignItems: 'start'
+    },
+    videoSection: {
+      background: 'white',
+      borderRadius: '12px',
+      padding: '20px',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.1)',
+      position: 'relative'
+    },
+    videoContainer: {
+      position: 'relative',
+      background: '#000',
+      borderRadius: '8px',
+      aspectRatio: '16/9',
+      overflow: 'hidden',
+      marginBottom: '20px'
+    },
+    mockVideo: {
+      width: '100%',
+      height: '100%',
+      background: 'linear-gradient(45deg, #1a1a1a, #333)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      color: 'white',
+      fontSize: '1.5rem',
+      position: 'relative'
+    },
+    playButton: {
+      position: 'absolute',
+      top: '50%',
+      left: '50%',
+      transform: 'translate(-50%, -50%)',
+      background: 'rgba(255,255,255,0.9)',
+      border: 'none',
+      borderRadius: '50%',
+      width: '80px',
+      height: '80px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      cursor: 'pointer',
+      fontSize: '2rem',
+      color: '#333',
+      transition: 'all 0.3s ease'
+    },
+    timeDisplay: {
+      position: 'absolute',
+      bottom: '10px',
+      right: '10px',
+      background: 'rgba(0,0,0,0.7)',
+      color: 'white',
+      padding: '4px 8px',
+      borderRadius: '4px',
+      fontSize: '0.9rem'
+    },
+    controls: {
+      display: 'flex',
+      gap: '10px',
+      flexWrap: 'wrap'
+    },
+    button: {
+      background: '#007bff',
+      color: 'white',
+      border: 'none',
+      padding: '8px 16px',
+      borderRadius: '6px',
+      cursor: 'pointer',
+      fontSize: '0.9rem',
+      transition: 'background 0.3s ease'
+    },
+    primaryButton: {
+      background: '#28a745'
+    },
+    dangerButton: {
+      background: '#dc3545'
+    },
+    controlPanel: {
+      background: 'white',
+      borderRadius: '12px',
+      padding: '20px',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.1)',
+      height: 'fit-content'
+    },
+    sectionTitle: {
+      fontSize: '1.3rem',
+      fontWeight: 'bold',
+      marginBottom: '15px',
+      color: '#333',
+      borderBottom: '2px solid #eee',
+      paddingBottom: '8px'
+    },
+    formGroup: {
+      marginBottom: '15px'
+    },
+    label: {
+      display: 'block',
+      marginBottom: '5px',
+      fontWeight: 'bold',
+      color: '#555'
+    },
+    input: {
+      width: '100%',
+      padding: '8px',
+      border: '1px solid #ddd',
+      borderRadius: '4px',
+      fontSize: '0.9rem'
+    },
+    select: {
+      width: '100%',
+      padding: '8px',
+      border: '1px solid #ddd',
+      borderRadius: '4px',
+      fontSize: '0.9rem',
+      background: 'white'
+    },
+    checkbox: {
+      marginRight: '8px'
+    },
+    infoPanel: {
+      background: '#f8f9fa',
+      border: '1px solid #dee2e6',
+      borderRadius: '6px',
+      padding: '15px',
+      marginTop: '20px'
+    },
+    infoTitle: {
+      fontWeight: 'bold',
+      marginBottom: '10px',
+      color: '#495057'
+    },
+    infoList: {
+      margin: 0,
+      paddingLeft: '20px',
+      color: '#6c757d'
+    }
+  };
+
+  return (
+    <div style={demoStyles.container}>
+      <div style={demoStyles.header}>
+        <h1 style={demoStyles.title}>🎬 Live Comments Overlay Demo</h1>
+        <p style={demoStyles.subtitle}>
+          Interactive video comments with real-time moderation & GDPR compliance
+        </p>
+      </div>
+
+      <div style={demoStyles.mainContent}>
+        <div style={demoStyles.videoSection}>
+          <div style={demoStyles.videoContainer}>
+            <div style={demoStyles.mockVideo}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '3rem', marginBottom: '10px' }}>🎥</div>
+                <div>Demo Video Player</div>
+                <div style={{ fontSize: '1rem', opacity: 0.7, marginTop: '5px' }}>
+                  {isVideoPlaying ? 'Playing...' : 'Click play to start'}
+                </div>
+              </div>
+              
+              {!isVideoPlaying && (
+                <button
+                  style={demoStyles.playButton}
+                  onClick={() => setIsVideoPlaying(true)}
+                  aria-label="Play video"
+                >
+                  ▶️
+                </button>
+              )}
+              
+              <div style={demoStyles.timeDisplay}>
+                {formatTime(currentTime)}
+              </div>
+            </div>
+
+            {/* LiveCommentsOverlay Component */}
+            <LiveCommentsOverlay
+              ref={commentsRef}
+              config={config}
+              playerElement={null}
+              className="demo-comments"
+            />
+          </div>
+
+          <div style={demoStyles.controls}>
+            <button
+              style={{...demoStyles.button, ...(isVideoPlaying ? demoStyles.dangerButton : demoStyles.primaryButton)}}
+              onClick={() => setIsVideoPlaying(!isVideoPlaying)}
+            >
+              {isVideoPlaying ? '⏸️ Pause' : '▶️ Play'}
+            </button>
+            
+            <button
+              style={{...demoStyles.button, ...demoStyles.primaryButton}}
+              onClick={handleSendTestComment}
+            >
+              💬 Send Test Comment
+            </button>
+            
+            <button
+              style={demoStyles.button}
+              onClick={() => setCurrentTime(0)}
+            >
+              🔄 Reset
+            </button>
+          </div>
+        </div>
+
+        <div style={demoStyles.controlPanel}>
+          <h3 style={demoStyles.sectionTitle}>⚙️ Configuration</h3>
+          
+          <div style={demoStyles.formGroup}>
+            <label style={demoStyles.label}>User Role:</label>
+            <select
+              style={demoStyles.select}
+              value={userRole}
+              onChange={(e) => setUserRole(e.target.value as 'user' | 'admin')}
+            >
+              <option value="user">👤 User</option>
+              <option value="admin">👑 Admin</option>
+            </select>
+          </div>
+
+          <div style={demoStyles.formGroup}>
+            <label style={demoStyles.label}>WebSocket URL:</label>
+            <input
+              style={demoStyles.input}
+              type="text"
+              value={websocketUrl}
+              onChange={(e) => setWebsocketUrl(e.target.value)}
+              placeholder="ws://localhost:8080"
+            />
+          </div>
+
+          <div style={demoStyles.formGroup}>
+            <label style={demoStyles.label}>
+              <input
+                style={demoStyles.checkbox}
+                type="checkbox"
+                checked={moderationEnabled}
+                onChange={(e) => setModerationEnabled(e.target.checked)}
+              />
+              Enable Moderation
+            </label>
+          </div>
+
+          <div style={demoStyles.infoPanel}>
+            <div style={demoStyles.infoTitle}>🎯 Features:</div>
+            <ul style={demoStyles.infoList}>
+              <li>Real-time WebSocket comments</li>
+              <li>GDPR consent management</li>
+              <li>Comment moderation tools</li>
+              <li>Profanity filtering</li>
+              <li>Mobile responsive design</li>
+              <li>Accessibility (WCAG 2.1)</li>
+            </ul>
+          </div>
+
+          <div style={demoStyles.infoPanel}>
+            <div style={demoStyles.infoTitle}>🎮 Instructions:</div>
+            <ul style={demoStyles.infoList}>
+              <li>Type comments in the overlay input</li>
+              <li>Press Alt+C to focus comment input</li>
+              <li>Switch to Admin role for moderation</li>
+              <li>Test different WebSocket URLs</li>
+              <li>Check browser console for events</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Sample configuration and usage example
 const sampleConfig: LiveCommentsConfig = {
   backend: 'websocket',
@@ -626,5 +1010,7 @@ const sampleConfig: LiveCommentsConfig = {
   onWebSocketDisconnect: () => console.log('WebSocket disconnected')
 };
 
-export default LiveCommentsOverlay;
+// Export the demo page as default
+export default LiveCommentsDemo;
+export { LiveCommentsOverlay };
 export type { LiveCommentsConfig, LiveCommentsOverlayProps, LiveCommentsOverlayRef, Comment };
