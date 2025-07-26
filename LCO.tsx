@@ -1,7 +1,6 @@
 'use client'
 import React, { useState, useEffect, useRef, useCallback, useImperativeHandle, forwardRef } from 'react';
 
-
 /**
  * LiveCommentsOverlay - Complete Demo Implementation in React TypeScript
  * Combines the original component with a fully functional demo interface
@@ -16,11 +15,15 @@ import React, { useState, useEffect, useRef, useCallback, useImperativeHandle, f
  * - GDPR compliance and accessibility
  */
 
-
 // =====================================================
 // TYPE DEFINITIONS
 // =====================================================
 
+type Backend = 'websocket' | 'firebase';
+type UserRole = 'user' | 'admin';
+type Theme = 'default' | 'dark' | 'light';
+type ModerationAction = 'highlight' | 'quarantine' | 'delete';
+type CommentStatus = 'normal' | 'quarantined';
 
 interface Comment {
   id: string;
@@ -28,22 +31,21 @@ interface Comment {
   text: string;
   timestamp: string;
   highlighted?: boolean;
-  status?: 'normal' | 'quarantined';
+  status?: CommentStatus;
   type?: string;
 }
 
-
 interface LiveCommentsConfig {
-  backend?: 'websocket' | 'firebase';
+  backend?: Backend;
   websocketUrl?: string;
   firebaseConfig?: any;
   moderationEnabled?: boolean;
   maxCommentsVisible?: number;
   commentDisplayDuration?: number;
   profanityFilter?: boolean;
-  userRole?: 'user' | 'admin';
+  userRole?: UserRole;
   gdprCompliance?: boolean;
-  theme?: 'default' | 'dark' | 'light';
+  theme?: Theme;
   onCommentReceived?: (comment: Comment) => void;
   onCommentFiltered?: (comment: Comment) => void;
   onModerationAction?: (commentId: string, action: string) => void;
@@ -52,23 +54,20 @@ interface LiveCommentsConfig {
   onError?: (errorInfo: { message: string; error: string; timestamp: string }) => void;
 }
 
-
 interface LiveCommentsOverlayProps {
   config: LiveCommentsConfig;
   playerElement?: HTMLElement | null;
   className?: string;
 }
 
-
 interface LiveCommentsOverlayRef {
   sendComment: (message: string) => void;
-  moderateComment: (commentId: string, action: 'highlight' | 'quarantine' | 'delete') => void;
+  moderateComment: (commentId: string, action: ModerationAction) => void;
   getComments: () => Comment[];
   getModerationQueue: () => Comment[];
   simulateComment: (comment: Comment) => void;
   destroy: () => void;
 }
-
 
 interface DemoStats {
   comments: number;
@@ -77,17 +76,35 @@ interface DemoStats {
   moderationQueue: number;
 }
 
+// =====================================================
+// SECURITY HELPERS
+// =====================================================
+
+function validateWebsocketUrl(url: string): void {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'ws:' && u.protocol !== 'wss:') {
+      throw new Error('WebSocket URL must use ws:// or wss://');
+    }
+  } catch (e) {
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    throw new Error(`Invalid WebSocket URL: ${errorMessage}`);
+  }
+}
+
+function sanitizeInput(input: string, maxLength: number = 200): string {
+  if (typeof input !== 'string') return '';
+  return input.slice(0, maxLength).trim();
+}
 
 // =====================================================
 // MOCK WEBSOCKET IMPLEMENTATION FOR DEMO
 // =====================================================
 
-
 class MockWebSocketServer {
   private readonly clients: MockWebSocket[] = [];
   private isRunning = false;
   private intervalId?: NodeJS.Timeout;
-
 
   start() {
     this.isRunning = true;
@@ -101,7 +118,6 @@ class MockWebSocketServer {
     }, 3000);
   }
 
-
   stop() {
     this.isRunning = false;
     if (this.intervalId) {
@@ -109,12 +125,10 @@ class MockWebSocketServer {
     }
   }
 
-
   addClient(client: MockWebSocket) {
     this.clients.push(client);
     console.log('🔗 Client connected to mock server');
   }
-
 
   removeClient(client: MockWebSocket) {
     const index = this.clients.indexOf(client);
@@ -123,7 +137,6 @@ class MockWebSocketServer {
       console.log('🔌 Client disconnected from mock server');
     }
   }
-
 
   broadcastRandomMessage() {
     const sampleMessages = [
@@ -139,12 +152,10 @@ class MockWebSocketServer {
       "Best tutorial ever! ⭐"
     ];
 
-
     const usernames = [
       "VideoFan123", "TechLover", "StudentLife", "CodeNinja", 
       "WebDev2024", "LearnMore", "StreamWatcher", "DevGuru"
     ];
-
 
     const message = {
       id: 'demo_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
@@ -153,7 +164,6 @@ class MockWebSocketServer {
       timestamp: new Date().toISOString(),
       type: 'comment'
     };
-
 
     // Send to all connected clients
     this.clients.forEach(client => {
@@ -164,20 +174,17 @@ class MockWebSocketServer {
   }
 }
 
-
 class MockWebSocket {
   public static readonly CONNECTING = 0;
   public static readonly OPEN = 1;
   public static readonly CLOSING = 2;
   public static readonly CLOSED = 3;
 
-
   public readyState: number = MockWebSocket.CONNECTING;
   public onopen: ((event: Event) => void) | null = null;
   public onmessage: ((event: MessageEvent) => void) | null = null;
   public onclose: ((event: CloseEvent) => void) | null = null;
   public onerror: ((event: Event) => void) | null = null;
-
 
   constructor(public url: string) {
     // Simulate connection delay
@@ -193,7 +200,6 @@ class MockWebSocket {
       }
     }, 500);
   }
-
 
   send(data: string) {
     try {
@@ -211,7 +217,6 @@ class MockWebSocket {
     }
   }
 
-
   close(code = 1000, reason = '') {
     this.readyState = MockWebSocket.CLOSED;
     if ((globalThis as any).mockServer) {
@@ -223,11 +228,9 @@ class MockWebSocket {
   }
 }
 
-
 // =====================================================
 // LIVE COMMENTS OVERLAY COMPONENT
 // =====================================================
-
 
 const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverlayProps>(
   ({ config, className = '' }, ref) => {
@@ -236,30 +239,31 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     const [userConsent, setUserConsent] = useState<boolean>(false);
     const [showConsentBanner, setShowConsentBanner] = useState<boolean>(false);
     const [inputValue, setInputValue] = useState<string>('');
-    const [isConnected, setIsConnected] = useState<boolean>(false);
 
     const websocketRef = useRef<WebSocket | MockWebSocket | null>(null);
     const reconnectAttemptsRef = useRef<number>(0);
     const rateLimitMapRef = useRef<Map<string, number>>(new Map());
 
-
     const bannedWords = ['spam', 'offensive', 'inappropriate'];
     const maxReconnectAttempts = 5;
 
-
     // Default configuration with validation
     const validateConfig = (inputConfig: LiveCommentsConfig): Required<LiveCommentsConfig> => {
+      const validUserRoles: UserRole[] = ['user', 'admin'];
+      const validThemes: Theme[] = ['default', 'dark', 'light'];
+      const validBackends: Backend[] = ['websocket', 'firebase'];
+
       return {
-        backend: inputConfig.backend || 'websocket',
-        websocketUrl: inputConfig.websocketUrl || 'ws://localhost:8080',
+        backend: validBackends.includes(inputConfig.backend || 'websocket') ? (inputConfig.backend || 'websocket') : 'websocket',
+        websocketUrl: inputConfig.websocketUrl || 'wss://localhost:8080',
         firebaseConfig: inputConfig.firebaseConfig || null,
         moderationEnabled: inputConfig.moderationEnabled !== false,
         maxCommentsVisible: Math.min(Math.max(inputConfig.maxCommentsVisible || 50, 1), 200),
         commentDisplayDuration: Math.min(Math.max(inputConfig.commentDisplayDuration || 5000, 1000), 30000),
         profanityFilter: inputConfig.profanityFilter !== false,
-        userRole: ['user', 'admin'].includes(inputConfig.userRole || 'user') ? (inputConfig.userRole || 'user') : 'user',
+        userRole: validUserRoles.includes(inputConfig.userRole || 'user') ? (inputConfig.userRole || 'user') : 'user',
         gdprCompliance: inputConfig.gdprCompliance !== false,
-        theme: ['default', 'dark', 'light'].includes(inputConfig.theme || 'default') ? (inputConfig.theme || 'default') : 'default',
+        theme: validThemes.includes(inputConfig.theme || 'default') ? (inputConfig.theme || 'default') : 'default',
         onCommentReceived: inputConfig.onCommentReceived || (() => {}),
         onCommentFiltered: inputConfig.onCommentFiltered || (() => {}),
         onModerationAction: inputConfig.onModerationAction || (() => {}),
@@ -269,24 +273,22 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       };
     };
 
-
     const validatedConfig = validateConfig(config);
     const isAdmin = validatedConfig.userRole === 'admin';
 
-
-    // Error handling
+    // Error handling with improved stringification
     const handleError = useCallback((message: string, error: unknown) => {
       console.error(`❌ LiveCommentsOverlay Error: ${message}`, error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error
+        ? (error.stack || error.message)
+        : JSON.stringify(error, Object.getOwnPropertyNames(error));
       validatedConfig.onError({ message, error: errorMessage, timestamp: new Date().toISOString() });
     }, [validatedConfig]);
-
 
     // Utility functions
     const generateId = (): string => {
       return 'comment_' + Date.now() + '_' + Math.random().toString(36).substring(2, 11);
     };
-
 
     const sanitizeHtml = (text: string): string => {
       try {
@@ -299,7 +301,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-
     const containsProfanity = (text: string): boolean => {
       try {
         const lowerText = text.toLowerCase();
@@ -309,7 +310,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         return true; // Fail safe
       }
     };
-
 
     const checkRateLimit = (): boolean => {
       try {
@@ -327,7 +327,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         return false;
       }
     };
-
 
     // Initialize component
     useEffect(() => {
@@ -347,7 +346,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     }, [validatedConfig.gdprCompliance, handleError]);
 
-
     // Connect to backend when consent is granted
     useEffect(() => {
       if (userConsent) {
@@ -359,7 +357,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         }
       };
     }, [userConsent]);
-
 
     // Keyboard navigation support
     useEffect(() => {
@@ -374,11 +371,9 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         }
       };
 
-
       document.addEventListener('keydown', handleKeyDown);
       return () => document.removeEventListener('keydown', handleKeyDown);
     }, [handleError]);
-
 
     const connectToBackend = () => {
       try {
@@ -393,15 +388,16 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-
     const connectToWebSocket = () => {
       try {
+        // Validate WebSocket URL for security
+        validateWebsocketUrl(validatedConfig.websocketUrl);
+        
         // Use MockWebSocket for demo
         websocketRef.current = new MockWebSocket(validatedConfig.websocketUrl);
         
         websocketRef.current.onopen = () => {
           console.log('🔗 Connected to WebSocket server');
-          setIsConnected(true);
           reconnectAttemptsRef.current = 0;
           validatedConfig.onWebSocketConnect();
         };
@@ -412,7 +408,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         
         websocketRef.current.onclose = (event) => {
           console.log('🔌 WebSocket connection closed');
-          setIsConnected(false);
           validatedConfig.onWebSocketDisconnect();
           if (event.code !== 1000 && event.code !== 1001) {
             attemptReconnect();
@@ -429,6 +424,11 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const handleWebSocketMessage = (event: MessageEvent) => {
       try {
+        // Validate message size for security
+        if (event.data.length > 10000) {
+          throw new Error('Message too large');
+        }
+        
         const data = JSON.parse(event.data) as Comment;
         if (validateIncomingMessage(data)) {
           handleIncomingComment(data);
@@ -438,15 +438,15 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-
     const validateIncomingMessage = (data: any): boolean => {
       return data && 
              typeof data.id === 'string' && 
              typeof data.username === 'string' && 
              typeof data.text === 'string' && 
-             typeof data.timestamp === 'string';
+             typeof data.timestamp === 'string' &&
+             data.text.length <= 1000 && // Security: limit message length
+             data.username.length <= 100; // Security: limit username length
     };
-
 
     const attemptReconnect = () => {
       if (reconnectAttemptsRef.current < maxReconnectAttempts) {
@@ -462,33 +462,41 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
+    // Extracted function to handle profanity quarantine (reduces nesting)
+    const handleProfanityQuarantine = (data: Comment): boolean => {
+      validatedConfig.onCommentFiltered(data);
+      
+      if (!validatedConfig.moderationEnabled) return false;
+      
+      const quarantinedComment: Comment = { ...data, status: 'quarantined' };
+      setModerationQueue(prev => [...prev, quarantinedComment]);
+      
+      if (isAdmin) {
+        displayComment(quarantinedComment);
+      }
+      return true;
+    };
+
     const handleIncomingComment = (data: Comment) => {
       try {
-        validatedConfig.onCommentReceived(data);
+        // Sanitize incoming data
+        const sanitizedComment: Comment = {
+          ...data,
+          text: sanitizeInput(data.text, 1000),
+          username: sanitizeInput(data.username, 100)
+        };
 
+        validatedConfig.onCommentReceived(sanitizedComment);
 
-        if (validatedConfig.profanityFilter && containsProfanity(data.text)) {
-          validatedConfig.onCommentFiltered(data);
-          
-          if (validatedConfig.moderationEnabled) {
-            const quarantinedComment: Comment = { ...data, status: 'quarantined' };
-            
-            setModerationQueue(prev => [...prev, quarantinedComment]);
-            
-            if (isAdmin) {
-              displayComment(quarantinedComment);
-            }
-          }
-          return;
+        if (validatedConfig.profanityFilter && containsProfanity(sanitizedComment.text)) {
+          if (handleProfanityQuarantine(sanitizedComment)) return;
         }
 
-
-        displayComment(data);
+        displayComment(sanitizedComment);
       } catch (error) {
         handleError('Incoming comment handling failed', error);
       }
     };
-
 
     const displayComment = (comment: Comment) => {
       try {
@@ -496,7 +504,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
           const newComments = [...prev, comment];
           return newComments.slice(-validatedConfig.maxCommentsVisible);
         });
-
 
         // Auto-remove comment after display duration
         setTimeout(() => {
@@ -507,36 +514,27 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-
     const sendComment = useCallback((message: string) => {
       try {
         if (!userConsent && validatedConfig.gdprCompliance) {
           throw new Error('User consent required');
         }
 
-
-        if (!message || typeof message !== 'string' || !message.trim()) {
+        const sanitizedMessage = sanitizeInput(message, 200);
+        if (!sanitizedMessage) {
           throw new Error('Invalid message');
         }
-
-
-        if (message.length > 200) {
-          throw new Error('Message too long');
-        }
-
 
         if (!checkRateLimit()) {
           throw new Error('Rate limit exceeded');
         }
 
-
         const comment: Comment = {
           id: generateId(),
           username: 'User' + Math.floor(Math.random() * 1000),
-          text: message.trim(),
+          text: sanitizedMessage,
           timestamp: new Date().toISOString()
         };
-
 
         if (websocketRef.current && websocketRef.current.readyState === MockWebSocket.OPEN) {
           websocketRef.current.send(JSON.stringify(comment));
@@ -550,25 +548,26 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     }, [userConsent, validatedConfig.gdprCompliance, handleError]);
 
-    const processCommentModeration = (comment: Comment, action: 'highlight' | 'quarantine' | 'delete'): Comment | null => {
-      switch (action) {
-        case 'highlight':
-          return { ...comment, highlighted: true };
-        case 'quarantine':
-          return { ...comment, status: 'quarantined' };
-        case 'delete':
-          return null;
-        default:
-          return comment;
+    // Extracted function to process comment moderation (reduces nested ternary)
+    const processCommentModeration = (comment: Comment, action: ModerationAction): Comment | null => {
+      if (action === 'highlight') {
+        return { ...comment, highlighted: true };
       }
+      if (action === 'quarantine') {
+        return { ...comment, status: 'quarantined' };
+      }
+      if (action === 'delete') {
+        return null;
+      }
+      return comment;
     };
 
-    const moderateComment = useCallback((commentId: string, action: 'highlight' | 'quarantine' | 'delete') => {
+    const moderateComment = useCallback((commentId: string, action: ModerationAction) => {
       try {
-        if (!commentId || !['highlight', 'quarantine', 'delete'].includes(action)) {
+        const validActions: ModerationAction[] = ['highlight', 'quarantine', 'delete'];
+        if (!commentId || !validActions.includes(action)) {
           throw new Error('Invalid moderation parameters');
         }
-
 
         validatedConfig.onModerationAction(commentId, action);
         
@@ -578,13 +577,12 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
               return processCommentModeration(comment, action);
             }
             return comment;
-          }).filter(Boolean) as Comment[];
+          }).filter(Boolean);
         });
       } catch (error) {
         handleError('Moderation failed', error);
       }
     }, [validatedConfig, handleError]);
-
 
     const simulateComment = useCallback((comment: Comment) => {
       try {
@@ -597,7 +595,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     }, [handleError]);
 
-
     const handleConsentAccept = () => {
       try {
         setUserConsent(true);
@@ -608,12 +605,10 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
-
     const handleConsentDecline = () => {
       setUserConsent(false);
       setShowConsentBanner(false);
     };
-
 
     const handleInputSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key === 'Enter' && inputValue.trim()) {
@@ -621,7 +616,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         setInputValue('');
       }
     };
-
 
     const destroy = useCallback(() => {
       try {
@@ -640,7 +634,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     }, [validatedConfig.gdprCompliance, handleError]);
 
-
     // Expose methods via ref
     useImperativeHandle(ref, () => ({
       sendComment,
@@ -650,7 +643,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       simulateComment,
       destroy
     }));
-
 
     // Component styles
     const overlayStyles: React.CSSProperties = {
@@ -670,14 +662,12 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       lineHeight: 1.4
     };
 
-
     const inputContainerStyles: React.CSSProperties = {
       position: 'absolute',
       bottom: '10px',
       right: '10px',
       width: '300px'
     };
-
 
     const inputStyles: React.CSSProperties = {
       width: '100%',
@@ -689,17 +679,28 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       fontSize: '14px'
     };
 
-
     // Sub-components
     const CommentItem: React.FC<{ comment: Comment }> = ({ comment }) => {
+      // Extract nested ternary operations into independent statements
+      const borderColor = comment.highlighted
+        ? '#ffd700'
+        : comment.status === 'quarantined'
+          ? '#dc3545'
+          : '#007bff';
+
+      const bgColor = comment.highlighted
+        ? 'rgba(255, 215, 0, 0.2)'
+        : comment.status === 'quarantined'
+          ? 'rgba(220, 53, 69, 0.2)'
+          : 'rgba(255, 255, 255, 0.1)';
+
       const itemStyles: React.CSSProperties = {
         marginBottom: '8px',
         padding: '5px',
-        borderLeft: `3px solid ${comment.highlighted ? '#ffd700' : comment.status === 'quarantined' ? '#dc3545' : '#007bff'}`,
-        background: comment.highlighted ? 'rgba(255, 215, 0, 0.2)' : comment.status === 'quarantined' ? 'rgba(220, 53, 69, 0.2)' : 'rgba(255, 255, 255, 0.1)',
+        borderLeft: `3px solid ${borderColor}`,
+        background: bgColor,
         borderRadius: '4px'
       };
-
 
       return (
         <article style={itemStyles} data-comment-id={comment.id}>
@@ -738,7 +739,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       );
     };
 
-
     const ConsentBanner: React.FC = () => (
       <div style={{
         position: 'fixed',
@@ -774,7 +774,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       </div>
     );
 
-
     return (
       <>
         <div
@@ -788,7 +787,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
             <CommentItem key={comment.id} comment={comment} />
           ))}
         </div>
-
 
         <div style={inputContainerStyles}>
           <input
@@ -804,21 +802,17 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
           />
         </div>
 
-
         {showConsentBanner && <ConsentBanner />}
       </>
     );
   }
 );
 
-
 LiveCommentsOverlay.displayName = 'LiveCommentsOverlay';
-
 
 // =====================================================
 // DEMO PAGE COMPONENT
 // =====================================================
-
 
 const DemoPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
@@ -830,11 +824,10 @@ const DemoPage: React.FC = () => {
   
   const overlayRef = useRef<LiveCommentsOverlayRef>(null);
 
-
   // Demo configuration
   const demoConfig: LiveCommentsConfig = {
     backend: 'websocket',
-    websocketUrl: 'ws://localhost:8080',
+    websocketUrl: 'ws://localhost:8080', // Using ws:// for demo only
     moderationEnabled: true,
     maxCommentsVisible: 10,
     commentDisplayDuration: 8000,
@@ -860,12 +853,10 @@ const DemoPage: React.FC = () => {
     }
   };
 
-
   const logToConsole = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setConsoleLog(prev => [...prev, `[${timestamp}] ${message}`].slice(-50));
   }, []);
-
 
   // Initialize demo
   useEffect(() => {
@@ -874,7 +865,6 @@ const DemoPage: React.FC = () => {
     (globalThis as any).mockServer = mockServer;
     mockServer.start();
 
-
     // Setup demo
     setTimeout(() => {
       setIsLoading(false);
@@ -882,12 +872,10 @@ const DemoPage: React.FC = () => {
       logToConsole('💡 Try typing in the comment input or use the control buttons');
     }, 1000);
 
-
     return () => {
       mockServer.stop();
     };
   }, [logToConsole]);
-
 
   // Demo control functions
   const sendQuickComment = () => {
@@ -913,7 +901,6 @@ const DemoPage: React.FC = () => {
     }
   };
 
-
   const sendHighlightedComment = () => {
     if (overlayRef.current) {
       overlayRef.current.simulateComment({
@@ -927,7 +914,6 @@ const DemoPage: React.FC = () => {
     }
   };
 
-
   const sendSpamComment = () => {
     if (overlayRef.current) {
       overlayRef.current.simulateComment({
@@ -940,7 +926,6 @@ const DemoPage: React.FC = () => {
     }
   };
 
-
   const toggleAdminMode = () => {
     setIsAdminMode(prev => !prev);
     const message = !isAdminMode ? 
@@ -949,12 +934,10 @@ const DemoPage: React.FC = () => {
     logToConsole(message);
   };
 
-
   const clearComments = () => {
     setCommentCount(0);
     logToConsole('Comments cleared');
   };
-
 
   const showStats = () => {
     const stats = {
@@ -968,7 +951,6 @@ const DemoPage: React.FC = () => {
     logToConsole(statsMessage);
     alert(statsMessage);
   };
-
 
   // Styles
   const styles = {
@@ -1085,7 +1067,6 @@ const DemoPage: React.FC = () => {
     }
   };
 
-
   if (isLoading) {
     return (
       <div style={{ ...styles.container, minHeight: '50vh' }}>
@@ -1105,7 +1086,6 @@ const DemoPage: React.FC = () => {
     );
   }
 
-
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -1114,7 +1094,6 @@ const DemoPage: React.FC = () => {
           Interactive Demo - Real-time Video Comments System
         </p>
       </div>
-
 
       <div style={styles.content}>
         <div style={styles.featureGrid}>
@@ -1135,7 +1114,6 @@ const DemoPage: React.FC = () => {
             <p>User consent management and data privacy controls.</p>
           </div>
         </div>
-
 
         <div style={styles.demoControls}>
           <h3 style={{ marginTop: 0, color: '#0277bd' }}>🎮 Demo Controls</h3>
@@ -1163,7 +1141,6 @@ const DemoPage: React.FC = () => {
           </div>
         </div>
 
-
         {/* Demo Video Player with Overlay */}
         <div style={styles.videoPlayer}>
           <div style={{ textAlign: 'center' }}>
@@ -1180,7 +1157,6 @@ const DemoPage: React.FC = () => {
             config={demoConfig}
           />
         </div>
-
 
         {/* Instructions */}
         <div style={{
@@ -1204,7 +1180,6 @@ const DemoPage: React.FC = () => {
           </div>
         </div>
 
-
         {/* Console Output */}
         <div>
           <h4>📋 Console Output</h4>
@@ -1213,7 +1188,6 @@ const DemoPage: React.FC = () => {
           </div>
         </div>
       </div>
-
 
       {/* Status Bar */}
       <div style={styles.statusBar}>
@@ -1226,7 +1200,6 @@ const DemoPage: React.FC = () => {
           <span>Errors: {errorCount}</span>
         </div>
       </div>
-
 
       <style jsx global>{`
         @keyframes pulse {
@@ -1251,6 +1224,5 @@ const DemoPage: React.FC = () => {
     </div>
   );
 };
-
 
 export default DemoPage;
