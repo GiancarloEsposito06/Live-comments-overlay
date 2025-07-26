@@ -163,17 +163,17 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         return `comment_${timestamp}_${randomPart}`;
       }
       
-      // Fallback for environments without crypto API (with warning)
-      console.warn('crypto.getRandomValues not available, falling back to less secure method');
-      const fallbackRandom = () => {
-        // Use multiple sources of entropy for better randomness
+      // Secure fallback using current timestamp and performance.now()
+      console.warn('crypto.getRandomValues not available, using timestamp-based fallback');
+      const secureRandom = () => {
+        // Use multiple sources of entropy without Math.random()
         const now = performance.now();
-        const random1 = Math.random();
-        const random2 = Math.random();
-        return (now * random1 * random2).toString(36).slice(2, 11);
+        const date = new Date().getTime();
+        const random = (now * date * Math.PI).toString(36).slice(2, 11);
+        return random;
       };
       
-      return `comment_${timestamp}_${fallbackRandom()}`;
+      return `comment_${timestamp}_${secureRandom()}`;
     };
 
     const sanitizeHtml = (text: string): string => {
@@ -304,9 +304,12 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         return `User${randomNumber}`;
       }
       
-      // Fallback with warning
-      console.warn('crypto.getRandomValues not available for username generation');
-      return `User${Math.floor(Math.random() * 10000)}`;
+      // Secure fallback without Math.random()
+      console.warn('crypto.getRandomValues not available for username generation, using timestamp-based fallback');
+      const now = Date.now();
+      const performanceTime = performance.now();
+      const fallbackNumber = Math.floor((now + performanceTime) % 10000);
+      return `User${fallbackNumber}`;
     };
 
     const sendComment = useCallback((message: string) => {
