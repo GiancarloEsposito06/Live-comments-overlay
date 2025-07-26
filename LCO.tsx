@@ -68,7 +68,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     const [userConsent, setUserConsent] = useState(false);
     const [showConsentBanner, setShowConsentBanner] = useState(false);
     const [inputValue, setInputValue] = useState('');
-    const [isConnected, setIsConnected] = useState(false);
     const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
 
     const websocketRef = useRef<WebSocket | null>(null);
@@ -138,8 +137,10 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
     useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
         if (e.altKey && e.key === 'c') {
-          const input = document.querySelector('.comments-input') as HTMLInputElement;
-          if (input) input.focus();
+          const input = document.querySelector('.comments-input');
+          if (input && 'focus' in input) {
+            (input as HTMLInputElement).focus();
+          }
         }
       };
 
@@ -209,7 +210,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const handleWebSocketOpen = () => {
       console.log('Connected to WebSocket server');
-      setIsConnected(true);
       reconnectAttemptsRef.current = 0;
       defaultConfig.onWebSocketConnect();
     };
@@ -225,7 +225,6 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const handleWebSocketClose = () => {
       console.log('WebSocket connection closed');
-      setIsConnected(false);
       defaultConfig.onWebSocketDisconnect();
       attemptReconnect();
     };
@@ -247,13 +246,15 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
+    const performReconnectAttempt = () => {
+      console.log(`Reconnection attempt ${reconnectAttemptsRef.current}`);
+      connectToWebSocket();
+    };
+
     const attemptReconnect = () => {
       if (reconnectAttemptsRef.current < maxReconnectAttempts) {
         reconnectAttemptsRef.current++;
-        setTimeout(() => {
-          console.log(`Reconnection attempt ${reconnectAttemptsRef.current}`);
-          connectToWebSocket();
-        }, 2000 * reconnectAttemptsRef.current);
+        setTimeout(performReconnectAttempt, 2000 * reconnectAttemptsRef.current);
       }
     };
 
@@ -277,6 +278,10 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       displayComment(data);
     };
 
+    const removeCommentAfterDelay = (commentId: string) => {
+      setComments(prev => prev.filter(c => c.id !== commentId));
+    };
+
     const displayComment = (comment: Comment) => {
       setComments(prev => {
         const newComments = [...prev, comment];
@@ -284,9 +289,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       });
 
       // Auto-remove comment after display duration
-      setTimeout(() => {
-        setComments(prev => prev.filter(c => c.id !== comment.id));
-      }, defaultConfig.commentDisplayDuration);
+      setTimeout(() => removeCommentAfterDelay(comment.id), defaultConfig.commentDisplayDuration);
     };
 
     /**
