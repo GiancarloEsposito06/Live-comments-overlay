@@ -65,11 +65,11 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
   ({ config, playerElement, className = '' }, ref) => {
     const [comments, setComments] = useState<Comment[]>([]);
     const [moderationQueue, setModerationQueue] = useState<Comment[]>([]);
-    const [userConsent, setUserConsent] = useState<boolean>(false);
-    const [showConsentBanner, setShowConsentBanner] = useState<boolean>(false);
-    const [inputValue, setInputValue] = useState<string>('');
-    const [isConnected, setIsConnected] = useState<boolean>(false);
-    const [isMobile, setIsMobile] = useState<boolean>(window.innerWidth <= 768);
+    const [userConsent, setUserConsent] = useState(false);
+    const [showConsentBanner, setShowConsentBanner] = useState(false);
+    const [inputValue, setInputValue] = useState('');
+    const [isConnected, setIsConnected] = useState(false);
+    const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
 
     const websocketRef = useRef<WebSocket | null>(null);
     const reconnectAttemptsRef = useRef<number>(0);
@@ -169,7 +169,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
         const now = performance.now();
         const random1 = Math.random();
         const random2 = Math.random();
-        return (now * random1 * random2).toString(36).substr(2, 9);
+        return (now * random1 * random2).toString(36).slice(2, 11);
       };
       
       return `comment_${timestamp}_${fallbackRandom()}`;
@@ -207,36 +207,41 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
+    const handleWebSocketOpen = () => {
+      console.log('Connected to WebSocket server');
+      setIsConnected(true);
+      reconnectAttemptsRef.current = 0;
+      defaultConfig.onWebSocketConnect();
+    };
+
+    const handleWebSocketMessage = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleIncomingComment(data);
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
+    };
+
+    const handleWebSocketClose = () => {
+      console.log('WebSocket connection closed');
+      setIsConnected(false);
+      defaultConfig.onWebSocketDisconnect();
+      attemptReconnect();
+    };
+
+    const handleWebSocketError = (error: Event) => {
+      console.error('WebSocket error:', error);
+    };
+
     const connectToWebSocket = () => {
       try {
         websocketRef.current = new WebSocket(defaultConfig.websocketUrl);
         
-        websocketRef.current.onopen = () => {
-          console.log('Connected to WebSocket server');
-          setIsConnected(true);
-          reconnectAttemptsRef.current = 0;
-          defaultConfig.onWebSocketConnect();
-        };
-        
-        websocketRef.current.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data) as Comment;
-            handleIncomingComment(data);
-          } catch (error) {
-            console.error('Error parsing WebSocket message:', error);
-          }
-        };
-        
-        websocketRef.current.onclose = () => {
-          console.log('WebSocket connection closed');
-          setIsConnected(false);
-          defaultConfig.onWebSocketDisconnect();
-          attemptReconnect();
-        };
-        
-        websocketRef.current.onerror = (error) => {
-          console.error('WebSocket error:', error);
-        };
+        websocketRef.current.onopen = handleWebSocketOpen;
+        websocketRef.current.onmessage = handleWebSocketMessage;
+        websocketRef.current.onclose = handleWebSocketClose;
+        websocketRef.current.onerror = handleWebSocketError;
       } catch (error) {
         console.error('Failed to connect to WebSocket:', error);
       }
@@ -342,7 +347,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
             }
           }
           return comment;
-        }).filter(Boolean) as Comment[];
+        }).filter((comment): comment is Comment => comment !== null);
       });
     }, [defaultConfig]);
 
@@ -516,9 +521,8 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       };
 
       return (
-        <div
+        <article
           style={itemStyle}
-          role="article"
           data-comment-id={comment.id}
         >
           <div style={styles.username}>
@@ -531,13 +535,13 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
             {new Date(comment.timestamp).toLocaleTimeString()}
           </div>
           {isAdmin && <AdminControls comment={comment} />}
-        </div>
+        </article>
       );
     };
 
     const ConsentBanner: React.FC = () => (
       <div style={styles.consentBanner}>
-        <div style={styles.consentContent} role="dialog" aria-labelledby="consent-title">
+        <dialog style={styles.consentContent} open aria-labelledby="consent-title">
           <h3 id="consent-title">Cookie and Data Consent</h3>
           <p>
             We use cookies and store comment data to provide live chat functionality.
@@ -557,7 +561,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
           >
             Decline
           </button>
-        </div>
+        </dialog>
       </div>
     );
 
