@@ -13,6 +13,7 @@ import React, { useState, useEffect, useRef, useCallback, useImperativeHandle, f
  * - Admin controls and moderation
  * - Error handling and validation
  * - GDPR compliance and accessibility
+ * - Security hardened against XSS and injection attacks
  */
 
 // =====================================================
@@ -94,7 +95,24 @@ function validateWebsocketUrl(url: string): void {
 
 function sanitizeInput(input: string, maxLength: number = 200): string {
   if (typeof input !== 'string') return '';
-  return input.slice(0, maxLength).trim();
+  // Remove null bytes, ZWSP, and other dangerous characters
+  const safe = input.replace(/[\u0000-\u001F\u007F\u200B]+/g, '');
+  return safe.slice(0, maxLength).trim();
+}
+
+function validateMessageSchema(data: any): boolean {
+  return (
+    data &&
+    typeof data === 'object' &&
+    typeof data.id === 'string' &&
+    typeof data.username === 'string' &&
+    typeof data.text === 'string' &&
+    typeof data.timestamp === 'string' &&
+    data.id.length <= 100 &&
+    data.username.length <= 100 &&
+    data.text.length <= 1000 &&
+    data.timestamp.length <= 50
+  );
 }
 
 // =====================================================
@@ -203,8 +221,28 @@ class MockWebSocket {
 
   send(data: string) {
     try {
-      const message = JSON.parse(data);
-      console.log('📤 Sent message:', message);
+      // Security: Validate input type and size
+      if (typeof data !== 'string' || data.length > 5000) {
+        throw new Error('Invalid or oversized payload');
+      }
+
+      let message: any;
+      try {
+        message = JSON.parse(data);
+      } catch {
+        throw new Error('Invalid JSON payload');
+      }
+
+      // Security: Validate message schema strictly
+      if (!validateMessageSchema(message)) {
+        throw new Error('Malformed message schema');
+      }
+
+      console.log('📤 Sent message:', { 
+        id: message.id, 
+        username: message.username, 
+        textLength: message.text.length 
+      });
       
       // Echo the message back as if it came from the server
       setTimeout(() => {
@@ -214,6 +252,9 @@ class MockWebSocket {
       }, 100);
     } catch (error) {
       console.error('❌ Error sending message:', error);
+      if (this.onerror) {
+        this.onerror(error as Event);
+      }
     }
   }
 
@@ -290,15 +331,15 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       return 'comment_' + Date.now() + '_' + Math.random().toString(36).substring(2, 11);
     };
 
+    // Security: Safe HTML sanitization that never uses innerHTML for output
     const sanitizeHtml = (text: string): string => {
-      try {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-      } catch (error) {
-        handleError('HTML sanitization failed', error);
-        return '';
-      }
+      if (typeof text !== 'string') return '';
+      // Remove dangerous characters including null bytes and ZWSP
+      const safe = text.replace(/[\u0000-\u001F\u007F\u200B]+/g, '');
+      // Use textContent for safe escaping - never set innerHTML in React output
+      const div = document.createElement('div');
+      div.textContent = safe;
+      return div.innerHTML; // This is safe as it's HTML-escaped by textContent
     };
 
     const containsProfanity = (text: string): boolean => {
@@ -422,30 +463,29 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       }
     };
 
+    // Security: Enhanced WebSocket message handling
     const handleWebSocketMessage = (event: MessageEvent) => {
       try {
-        // Validate message size for security
-        if (event.data.length > 10000) {
-          throw new Error('Message too large');
+        // Security: Validate message type and size
+        if (typeof event.data !== 'string' || event.data.length > 10000) {
+          throw new Error('Message too large or not a string');
         }
         
-        const data = JSON.parse(event.data) as Comment;
-        if (validateIncomingMessage(data)) {
-          handleIncomingComment(data);
+        const data = JSON.parse(event.data);
+        
+        // Security: Strict schema validation
+        if (!validateMessageSchema(data)) {
+          throw new Error('Received malformed comment');
         }
+        
+        handleIncomingComment(data as Comment);
       } catch (error) {
         handleError('Message parsing failed', error);
       }
     };
 
     const validateIncomingMessage = (data: any): boolean => {
-      return data && 
-             typeof data.id === 'string' && 
-             typeof data.username === 'string' && 
-             typeof data.text === 'string' && 
-             typeof data.timestamp === 'string' &&
-             data.text.length <= 1000 && // Security: limit message length
-             data.username.length <= 100; // Security: limit username length
+      return validateMessageSchema(data);
     };
 
     const attemptReconnect = () => {
@@ -479,7 +519,7 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
 
     const handleIncomingComment = (data: Comment) => {
       try {
-        // Sanitize incoming data
+        // Security: Sanitize incoming data
         const sanitizedComment: Comment = {
           ...data,
           text: sanitizeInput(data.text, 1000),
@@ -705,10 +745,12 @@ const LiveCommentsOverlay = forwardRef<LiveCommentsOverlayRef, LiveCommentsOverl
       return (
         <article style={itemStyles} data-comment-id={comment.id}>
           <div style={{ fontWeight: 'bold', color: '#007bff', marginRight: '5px' }}>
-            {sanitizeHtml(comment.username)}:
+            {/* Security: React escapes by default - never use dangerouslySetInnerHTML */}
+            {comment.username}:
           </div>
           <div style={{ wordWrap: 'break-word' }}>
-            {sanitizeHtml(comment.text)}
+            {/* Security: React escapes by default - safe output */}
+            {comment.text}
           </div>
           <div style={{ fontSize: '10px', color: '#cccccc', marginTop: '2px' }}>
             {new Date(comment.timestamp).toLocaleTimeString()}
